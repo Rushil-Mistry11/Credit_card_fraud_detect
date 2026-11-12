@@ -1,0 +1,14 @@
+pandas
+numpy
+scikit-learn
+imbalanced-learn
+matplotlib
+plotly
+joblib
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+streamlit>=1.50
+requests
+httpx
