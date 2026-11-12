@@ -1,11 +1,3 @@
-"""Create a SYNTHETIC dataset with the same schema as the Kaggle file.
-
-Only for testing the pipeline before you download the real data.
-Usage:  python -m ml.make_demo_data   ->  data/creditcard_demo.csv
-Then point the project at it:
-    Windows (PowerShell):  $env:FRAUD_DATA="data/creditcard_demo.csv"
-    macOS/Linux:           export FRAUD_DATA=data/creditcard_demo.csv
-"""
 import numpy as np
 import pandas as pd
 

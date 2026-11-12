@@ -1,8 +1,3 @@
-"""FastAPI inference + audit service.
-
-Run from project root:   uvicorn backend.main:app --reload
-Docs:                    http://127.0.0.1:8000/docs
-"""
 import json
 from contextlib import asynccontextmanager
 from typing import List, Optional

@@ -1,4 +1,3 @@
-"""Central configuration shared by the ML pipeline, backend and dashboard."""
 import os
 from pathlib import Path
 

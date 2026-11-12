@@ -1,4 +1,3 @@
-"""Load data, split, scale and apply SMOTE (training data only)."""
 import joblib
 import pandas as pd
 from imblearn.over_sampling import SMOTE
