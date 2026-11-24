@@ -137,7 +137,7 @@ with tab2:
         st.subheader("Leaderboard")
         st.dataframe(table.style.format("{:.4f}", subset=table.columns[:-1])
                      .format("{:.1f}", subset=["Train time (s)"])
-                     .highlight_max(subset=["F1", "ROC-AUC", "PR-AUC"], color="#d5f5e3"),
+                     .highlight_max(subset=["F1", "ROC-AUC", "PR-AUC"],props="background-color:#1e6b3c; color:white;"),
                      width="stretch")
 
         long = table[["Precision", "Recall", "F1", "ROC-AUC", "PR-AUC"]].reset_index() \
@@ -220,9 +220,10 @@ with tab3:
 import re
 from datetime import date
 
-MERCHANTS = ["Amazon (online shopping)", "Uber (ride)", "Netflix (subscription)",
-             "Electronics Store", "Overseas Travel Agency"]
-PROFILES = {"Regular spending behaviour": 0, "Unusual / suspicious behaviour": 1}
+PROFILES = {"Regular spending behaviour": 0,
+            "Unusual / suspicious behaviour": 1,
+            "Borderline behaviour (triggers OTP)": "borderline"}
+BORDERLINE_PATH = Path(DATA_PATH).parent / "borderline_samples.csv"
 ENGINE_ACTION = {"LOW": "APPROVE",
                  "MEDIUM": "STEP-UP VERIFICATION (OTP)",
                  "HIGH": "DECLINE & FLAG FOR REVIEW"}
@@ -256,6 +257,24 @@ def reset_payment():
     st.session_state.pop("pay_ctx", None)
 
 
+def pick_transaction(kind, algo):
+    """Return (row, problem). Picks a real dataset row for the chosen behaviour."""
+    if kind == "borderline":
+        if not BORDERLINE_PATH.exists():
+            return None, ("Borderline samples not created yet. Run "
+                          "`python -m ml.make_borderline_samples` once, then try again.")
+        pool = pd.read_csv(BORDERLINE_PATH)
+        pool = pool[pool[f"medium_{algo}"] == 1]
+        if pool.empty:
+            return None, (f"No borderline transactions exist for {DISPLAY_NAMES[algo]}. "
+                          "Choose another risk engine (MLP or SVC usually have some).")
+        return pool.sample(1).iloc[0], None
+    samples = load_samples()
+    if samples is None:
+        return None, "Dataset not found, so no transaction can be picked. Check data/creditcard.csv."
+    return samples[samples["Class"] == kind].sample(1).iloc[0], None
+
+
 with tab4:
     st.session_state.setdefault("pay_stage", "form")
     stage = st.session_state["pay_stage"]
@@ -280,6 +299,9 @@ with tab4:
                 st.markdown("**Demo controls**")
                 profile = st.radio("Customer behaviour to simulate", list(PROFILES),
                                    key="pay_profile")
+                st.caption("Borderline = a real held-out transaction that the chosen model "
+                           "scores as medium risk. It uses that transaction's own amount, "
+                           "so the engine reliably asks for an OTP.")
                 algo = st.selectbox("Risk engine model", list(DISPLAY_NAMES), index=3,
                                     format_func=lambda k: DISPLAY_NAMES[k], key="pay_algo")
                 submitted = st.form_submit_button("Pay now", type="primary", width="stretch")
@@ -298,20 +320,23 @@ with tab4:
                     st.error(e)
 
                 if not errors:
-                    samples = load_samples()
-                    if samples is None:
-                        st.error("Dataset not found, so the simulator cannot pick a "
-                                 "transaction profile. Check data/creditcard.csv.")
+                    kind = PROFILES[profile]
+                    row, problem = pick_transaction(kind, algo)
+                    if problem:
+                        st.error(problem)
                     else:
-                        row = samples[samples["Class"] == PROFILES[profile]].sample(1).iloc[0]
                         feats = {f: float(row[f]) for f in FEATURES}
-                        feats["Amount"] = float(amount)   # the amount the user typed
+                        # Borderline rows keep their own amount (that is what was scored
+                        # as medium); other profiles use the amount typed in the form.
+                        used_amount = float(row["Amount"]) if kind == "borderline" else float(amount)
+                        feats["Amount"] = used_amount
                         res = api("POST", "/predict", json={"algorithm": algo, "features": feats})
                         if res:
                             outcome = {"LOW": "approved", "MEDIUM": "pending",
                                        "HIGH": "declined"}[res["risk_level"]]
                             st.session_state["pay_ctx"] = {
-                                "amount": float(amount),
+                                "amount": used_amount, "typed_amount": float(amount),
+                                "own_amount": kind == "borderline",
                                 "last4": "".join(ch for ch in card if ch.isdigit())[-4:],
                                 "algo": algo, "profile": profile,
                                 "result": res, "outcome": outcome}
@@ -364,9 +389,12 @@ with tab4:
                         f"**Model:** {DISPLAY_NAMES[ctx['algo']]}  \n"
                         f"**Log ID:** #{r['id']} (see the Audit Logs tab)")
             st.caption(f"Behaviour profile simulated: {ctx['profile']}.")
+            if ctx.get("own_amount"):
+                st.caption(f"The borderline profile scored the recorded transaction amount "
+                           f"(€{ctx['amount']:,.2f}), not the €{ctx['typed_amount']:,.2f} typed.")
 
     st.caption("Simulation notice: card details are checked locally and are never sent to the "
                "API or stored. The model's 28 behavioural features (V1–V28) are taken from a "
-               "real transaction in the dataset that matches the behaviour you pick; only the "
-               "amount comes from the form. A real bank would compute these from card history.")
-
+               "real transaction in the dataset that matches the behaviour you pick; for the "
+               "regular and suspicious profiles only the amount comes from the form. A real "
+               "bank would compute these features from card history.")
