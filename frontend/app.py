@@ -73,7 +73,7 @@ for f in FEATURES:
 
 st.title("💳 Real-Time Credit Card Fraud Risk Scoring")
 health = api("GET", "/health")
-tab1, tab2, tab3 = st.tabs(["🔍 Real-time Evaluator", "📊 Model Comparison", "🗂️ Admin Audit Logs"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 Real-time Evaluator", "📊 Model Comparison","🗂️ Admin Audit Logs", "💳 Payment Simulator"])
 
 # ---------- TAB 1 ----------
 with tab1:
@@ -215,3 +215,158 @@ with tab3:
         st.download_button("Download CSV", df.to_csv(index=False), "audit_logs.csv", "text/csv")
     elif logs == []:
         st.info("No transactions logged yet. Evaluate one in the first tab.")
+
+# ---------- TAB 4 ----------
+import re
+from datetime import date
+
+MERCHANTS = ["Amazon (online shopping)", "Uber (ride)", "Netflix (subscription)",
+             "Electronics Store", "Overseas Travel Agency"]
+PROFILES = {"Regular spending behaviour": 0, "Unusual / suspicious behaviour": 1}
+ENGINE_ACTION = {"LOW": "APPROVE",
+                 "MEDIUM": "STEP-UP VERIFICATION (OTP)",
+                 "HIGH": "DECLINE & FLAG FOR REVIEW"}
+DEMO_OTP = "123456"
+
+
+def luhn_ok(number: str) -> bool:
+    digits = [int(c) for c in number if c.isdigit()]
+    if len(digits) != 16:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def expiry_ok(text: str) -> bool:
+    m = re.fullmatch(r"(0[1-9]|1[0-2])/(\d{2})", text.strip())
+    if not m:
+        return False
+    today = date.today()
+    return (2000 + int(m.group(2)), int(m.group(1))) >= (today.year, today.month)
+
+
+def reset_payment():
+    st.session_state["pay_stage"] = "form"
+    st.session_state.pop("pay_ctx", None)
+
+
+with tab4:
+    st.session_state.setdefault("pay_stage", "form")
+    stage = st.session_state["pay_stage"]
+    ctx = st.session_state.get("pay_ctx")
+    left, right = st.columns([1, 1], gap="large")
+
+    # ---------------- LEFT: what the customer sees ----------------
+    with left:
+        st.subheader("🔒 Secure Checkout")
+
+        if stage == "form":
+            with st.form("pay_form"):
+                amount = st.number_input("Amount (€)", min_value=0.01, value=49.99,
+                                         step=1.0, format="%.2f", key="pay_amount")
+                name = st.text_input("Cardholder name", "Demo Customer", key="pay_name")
+                card = st.text_input("Card number (demo card, never stored)",
+                                     "4242 4242 4242 4242", max_chars=19, key="pay_card")
+                c1, c2 = st.columns(2)
+                expiry = c1.text_input("Expiry (MM/YY)", "12/30", max_chars=5, key="pay_expiry")
+                cvv = c2.text_input("CVV", "123", type="password", max_chars=4, key="pay_cvv")
+
+                st.markdown("**Demo controls**")
+                profile = st.radio("Customer behaviour to simulate", list(PROFILES),
+                                   key="pay_profile")
+                algo = st.selectbox("Risk engine model", list(DISPLAY_NAMES), index=3,
+                                    format_func=lambda k: DISPLAY_NAMES[k], key="pay_algo")
+                submitted = st.form_submit_button("Pay now", type="primary", width="stretch")
+
+            if submitted:
+                errors = []
+                if not name.strip():
+                    errors.append("Enter the cardholder name.")
+                if not luhn_ok(card):
+                    errors.append("Card number is invalid (16 digits, valid checksum).")
+                if not expiry_ok(expiry):
+                    errors.append("Expiry must be MM/YY and not in the past.")
+                if not re.fullmatch(r"\d{3,4}", cvv):
+                    errors.append("CVV must be 3 or 4 digits.")
+                for e in errors:
+                    st.error(e)
+
+                if not errors:
+                    samples = load_samples()
+                    if samples is None:
+                        st.error("Dataset not found, so the simulator cannot pick a "
+                                 "transaction profile. Check data/creditcard.csv.")
+                    else:
+                        row = samples[samples["Class"] == PROFILES[profile]].sample(1).iloc[0]
+                        feats = {f: float(row[f]) for f in FEATURES}
+                        feats["Amount"] = float(amount)   # the amount the user typed
+                        res = api("POST", "/predict", json={"algorithm": algo, "features": feats})
+                        if res:
+                            outcome = {"LOW": "approved", "MEDIUM": "pending",
+                                       "HIGH": "declined"}[res["risk_level"]]
+                            st.session_state["pay_ctx"] = {
+                                "amount": float(amount),
+                                "last4": "".join(ch for ch in card if ch.isdigit())[-4:],
+                                "algo": algo, "profile": profile,
+                                "result": res, "outcome": outcome}
+                            st.session_state["pay_stage"] = "otp" if outcome == "pending" else "done"
+                            st.rerun()
+
+        elif stage == "otp" and ctx:
+            st.warning("⚠️ **Extra verification required.** For your security, enter the "
+                       "6-digit code we sent to your registered phone.")
+            with st.form("otp_form"):
+                otp = st.text_input("One-time code", max_chars=6, key="pay_otp")
+                verify = st.form_submit_button("Verify & pay", type="primary", width="stretch")
+            st.caption(f"Demo code: {DEMO_OTP}")
+            if verify:
+                ctx["outcome"] = "approved_verified" if otp == DEMO_OTP else "declined_otp"
+                st.session_state["pay_stage"] = "done"
+                st.rerun()
+            st.button("Cancel payment", on_click=reset_payment)
+
+        elif stage == "done" and ctx:
+            out, r = ctx["outcome"], ctx["result"]
+            if out in ("approved", "approved_verified"):
+                st.success("✅ Payment successful")
+                with st.container(border=True):
+                    st.markdown(f"**Amount:** €{ctx['amount']:,.2f}  \n"
+                                f"**Card:** •••• •••• •••• {ctx['last4']}  \n"
+                                f"**Reference:** TXN-{r['id']:06d}")
+                if out == "approved_verified":
+                    st.caption("Approved after one-time-code verification.")
+            elif out == "declined":
+                st.error("⛔ Payment declined")
+                st.write("For your security we couldn't complete this payment. "
+                         "Our fraud team has been notified and will review it.")
+            else:  # declined_otp
+                st.error("⛔ Verification failed. The payment was cancelled.")
+            st.button("Make another payment", on_click=reset_payment, type="primary")
+
+    # ---------------- RIGHT: what the bank's risk engine sees ----------------
+    with right:
+        st.subheader("🛡️ Risk engine view")
+        if stage == "form" or not ctx:
+            st.info("Customers never see this panel. After you click **Pay now**, it shows "
+                    "how the model scored the payment and what action the engine took.")
+            st.markdown("**Risk bands**  \n🟢 LOW (< 30%) → approve  \n"
+                        "🟡 MEDIUM (30–70%) → ask for OTP  \n🔴 HIGH (≥ 70%) → decline & flag")
+        else:
+            r = ctx["result"]
+            st.plotly_chart(gauge(r["risk_score"], r["risk_level"]), width="stretch")
+            st.markdown(f"**Engine action:** {ENGINE_ACTION[r['risk_level']]}  \n"
+                        f"**Model:** {DISPLAY_NAMES[ctx['algo']]}  \n"
+                        f"**Log ID:** #{r['id']} (see the Audit Logs tab)")
+            st.caption(f"Behaviour profile simulated: {ctx['profile']}.")
+
+    st.caption("Simulation notice: card details are checked locally and are never sent to the "
+               "API or stored. The model's 28 behavioural features (V1–V28) are taken from a "
+               "real transaction in the dataset that matches the behaviour you pick; only the "
+               "amount comes from the form. A real bank would compute these from card history.")
+
